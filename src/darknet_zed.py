@@ -29,14 +29,14 @@ from sensor_msgs.msg import Image
 
 from std_msgs.msg import Header
 from std_msgs.msg import String
-from darknet_ros_msgs.msg import LabelPointcloud
-from darknet_ros_msgs.msg import LabelPointclouds
+from darknet_ros_msgs.msg import centerBdbox
+from darknet_ros_msgs.msg import centerBdboxes
 
 
 # Public image for openvslam
 left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
 right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
-label_point_pub = rospy.Publisher('/camera/label_pointcloud', LabelPointclouds, queue_size=10)
+boundingbox_pub = rospy.Publisher('/camera/boundingbox', centerBdboxes, queue_size=10)
 rospy.init_node('zedImage', anonymous=True)
 
 
@@ -142,7 +142,7 @@ if os.name == "nt":
             log.warning("Environment variables indicated a CPU run, but we didn't find `" +
                         winNoGPUdll+"`. Trying a GPU run anyway.")
 else:
-    lib = CDLL("libdarknet/libdarknet.so", RTLD_GLOBAL)
+    lib = CDLL("/home/docker/catkin_ws/src/zed_yolo/src/libdarknet/libdarknet.so", RTLD_GLOBAL)
 lib.network_width.argtypes = [c_void_p]
 lib.network_width.restype = c_int
 lib.network_height.argtypes = [c_void_p]
@@ -373,7 +373,7 @@ def generate_color(meta_path):
 def main(argv):
 
     thresh = 0.25
-    darknet_path="libdarknet/"
+    darknet_path="/home/docker/catkin_ws/src/zed_yolo/src/libdarknet/"
     config_path = darknet_path + "cfg/yolov3.cfg"
     weight_path = darknet_path + "weights/yolov3.weights"
     meta_path = darknet_path + "cfg/coco.data"
@@ -493,11 +493,12 @@ def main(argv):
             detections = detect(netMain, metaMain, image, thresh)
 
             log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
-            labelPoints = []
+            boundingboxes = []
 
             # Create check frame
             h, w, c = image.shape
             check_img = np.full((h, w, 4), (0, 0, 0, 0), np.uint8)
+            id = 0
             for detection in detections:
                 label = detection[0]
                 confidence = detection[1]
@@ -512,22 +513,17 @@ def main(argv):
                 #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
                 thickness = 1
                 x, y, z = get_object_depth(depth, bounds)
-                list = get_target_pcl(depth, bounds)
+                box = centerBdbox()
+                box.probability = confidence
+                box.x_cen = int(bounds[0])
+                box.y_cen = int(bounds[1])
+                box.width = int(bounds[2])
+                box.height = int(bounds[3])
+                box.Class = label
+                box.id = id
+                id += 1
 
-                if list:
-                    for data in list:
-                        i, j = data['pixel']
-                        check_img[i, j, 0] = 255
-                        check_img[i, j, 1] = 255
-                        check_img[i, j, 2] = 255
-
-                        pt = LabelPointcloud()
-                        x, y, z = data['point']
-                        pt.x = x
-                        pt.y = y
-                        pt.z = z
-                        pt.label = label
-                        labelPoints.append(pt)
+                boundingboxes.append(box)
 
                 distance = math.sqrt(x * x + y * y + z * z)
                 distance = "{:.2f}".format(distance)
@@ -541,27 +537,23 @@ def main(argv):
                               (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
                               color_array[detection[3]], int(thickness*2))
 
-            pointCloud_msg = LabelPointclouds()
-            header = Header()
-            header.frame_id = "label_pointcloud"
-            pointCloud_msg.header = header
-            pointCloud_msg.pClouds = labelPoints
 
             # Publish left and right image for Slam
             from cv_bridge import CvBridge
             left_msg_frame = CvBridge().cv2_to_imgmsg(image)
             right_msg_frame = CvBridge().cv2_to_imgmsg(right_image)
+
+            boundingbox_msg = centerBdboxes()
+            boundingbox_msg.header = left_msg_frame.header
+            boundingbox_msg.centerBdboxes = boundingboxes
+
             left_img_pub.publish(left_msg_frame)
             right_img_pub.publish(right_msg_frame)
-            label_point_pub.publish(pointCloud_msg)
-            
-            # [blend_images]
-            alpha = 0.7
-            beta = (1.0 - alpha)
-            dst = cv2.addWeighted(image, alpha, check_img, beta, 0.0)
+            if boundingboxes != []:
+                boundingbox_pub.publish(boundingbox_msg)
+    
             cv2.imshow("ZED", image)
-            cv2.imshow("check", check_img)
-            cv2.imshow("blend", dst)
+
             key = cv2.waitKey(5)
             log.info("FPS: {}".format(1.0 / (time.time() - start_time)))
         else:
