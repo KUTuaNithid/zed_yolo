@@ -34,9 +34,9 @@ from darknet_ros_msgs.msg import centerBdboxes
 
 
 # Public image for openvslam
-left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
-right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
-boundingbox_pub = rospy.Publisher('/camera/boundingbox', centerBdboxes, queue_size=10)
+left_img_pub = rospy.Publisher('camera/left/image_raw', Image, queue_size=10)
+right_img_pub = rospy.Publisher('camera/right/image_raw', Image, queue_size=10)
+boundingbox_pub = rospy.Publisher('camera/boundingbox', centerBdboxes, queue_size=10)
 rospy.init_node('zedImage', anonymous=True)
 
 
@@ -331,7 +331,7 @@ def get_target_pcl(depth, bounds):
         bounds: Bounding box for object in pixels.
             bounds[0]: x-center
             bounds[1]: y-center
-            bounds[2]: width of bounding box.
+            bounds[2]: width of bounding box.image_encodings
             bounds[3]: height of bounding box.
 
     Return:
@@ -537,20 +537,31 @@ def main(argv):
                               (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
                               color_array[detection[3]], int(thickness*2))
 
-
+            t = rospy.get_rostime()
             # Publish left and right image for Slam
             from cv_bridge import CvBridge
-            left_msg_frame = CvBridge().cv2_to_imgmsg(image)
-            right_msg_frame = CvBridge().cv2_to_imgmsg(right_image)
+            bridge = CvBridge()
+            left_msg_frame = bridge.cv2_to_imgmsg(image)
+            right_msg_frame = bridge.cv2_to_imgmsg(right_image)
+            left_msg_frame.encoding = "bgra8"
+            right_msg_frame.encoding = "bgra8"
+            left_msg_frame.header = Header()
+            left_msg_frame.header.stamp = t;
+            left_msg_frame.header.frame_id = "camera_left";
+            right_msg_frame.header = Header()
+            right_msg_frame.header.stamp = t;
+            right_msg_frame.header.frame_id = "camera_right";
 
             boundingbox_msg = centerBdboxes()
-            boundingbox_msg.header = left_msg_frame.header
+            boundingbox_msg.header = Header()
+            boundingbox_msg.header.stamp = t;
+            boundingbox_msg.header.frame_id = "object_detection"
             boundingbox_msg.centerBdboxes = boundingboxes
 
             left_img_pub.publish(left_msg_frame)
             right_img_pub.publish(right_msg_frame)
-            if boundingboxes != []:
-                boundingbox_pub.publish(boundingbox_msg)
+            # if boundingboxes != []:
+            boundingbox_pub.publish(boundingbox_msg)
     
             cv2.imshow("ZED", image)
 
