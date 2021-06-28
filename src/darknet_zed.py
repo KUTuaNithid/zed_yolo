@@ -36,6 +36,7 @@ from darknet_ros_msgs.msg import LabelPointclouds
 # Public image for openvslam
 left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
 right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
+blend_img_pub = rospy.Publisher('/camera/blend/image_raw', Image, queue_size=10)
 label_point_pub = rospy.Publisher('/camera/label_pointcloud', LabelPointclouds, queue_size=10)
 rospy.init_node('zedImage', anonymous=True)
 
@@ -550,7 +551,9 @@ def main(argv):
             # Publish left and right image for Slam
             from cv_bridge import CvBridge
             left_msg_frame = CvBridge().cv2_to_imgmsg(image)
+            left_msg_frame.encoding = "bgra8"
             right_msg_frame = CvBridge().cv2_to_imgmsg(right_image)
+            right_msg_frame.encoding = "bgra8"
             left_img_pub.publish(left_msg_frame)
             right_img_pub.publish(right_msg_frame)
             label_point_pub.publish(pointCloud_msg)
@@ -562,6 +565,9 @@ def main(argv):
             cv2.imshow("ZED", image)
             cv2.imshow("check", check_img)
             cv2.imshow("blend", dst)
+            bld_msg_frame = CvBridge().cv2_to_imgmsg(dst)
+            bld_msg_frame.encoding = "bgra8"
+            blend_img_pub.publish(bld_msg_frame)
             key = cv2.waitKey(5)
             log.info("FPS: {}".format(1.0 / (time.time() - start_time)))
         else:
