@@ -281,37 +281,6 @@ netMain = None
 metaMain = None
 altNames = None
 
-target = [(655.258,  391.91),
-(674 , 370),
-(665.28 , 385.92),
-(670.055,  383.4),
-(673.638,  369.068),
-(641 ,  383)]
-count = 0
-def find_target(depth):
-    global count
-    if count > 100 and count < 105:
-        for x, y in target:
-            print("depth", x, y, depth.get_value(int(y), int(x)))
-        area_div = 2
-
-        z_vect = []
-
-        # for x in range(600, 680):
-        #     for y in range(320, 400):
-        #         _, z = depth.get_value(int(y), int(x))
-        #         if not np.isnan(z) and not np.isinf(z):
-        #             z_vect.append(z)
-
-        # try:
-        #     z_median = statistics.median(z_vect)
-        # except Exception:
-        #     z_median = -1
-        #     pass
-        # print(z_vect)
-        # print("Depth", z)
-        # print("Depth", depth.get_value(340, 640))
-    count = count + 1
 
 def get_object_depth(depth, bounds):
     '''
@@ -341,7 +310,6 @@ def get_object_depth(depth, bounds):
                 x_vect.append(depth[i, j, 0])
                 y_vect.append(depth[i, j, 1])
                 z_vect.append(z)
-
     try:
         x_median = statistics.median(x_vect)
         y_median = statistics.median(y_vect)
@@ -446,9 +414,6 @@ def main(argv):
 
     init = sl.InitParameters(input_t=input_type)
     init.coordinate_units = sl.UNIT.METER
-    init.depth_mode = sl.DEPTH_MODE.ULTRA
-    init.depth_minimum_distance = 0.2
-
 
     cam = sl.Camera()
     if not cam.is_opened():
@@ -465,48 +430,48 @@ def main(argv):
     mat_right = sl.Mat()
     point_cloud_mat = sl.Mat()
 
-    # Import the global variables. This lets us instance Darknet once,
-    # then just call performDetect() again without instancing again
-    global metaMain, netMain, altNames  # pylint: disable=W0603
-    assert 0 < thresh < 1, "Threshold should be a float between zero and one (non-inclusive)"
-    if not os.path.exists(config_path):
-        raise ValueError("Invalid config path `" +
-                         os.path.abspath(config_path)+"`")
-    if not os.path.exists(weight_path):
-        raise ValueError("Invalid weight path `" +
-                         os.path.abspath(weight_path)+"`")
-    if not os.path.exists(meta_path):
-        raise ValueError("Invalid data file path `" +
-                         os.path.abspath(meta_path)+"`")
-    if netMain is None:
-        netMain = load_net_custom(config_path.encode(
-            "ascii"), weight_path.encode("ascii"), 0, 1)  # batch size = 1
-    if metaMain is None:
-        metaMain = load_meta(meta_path.encode("ascii"))
-    if altNames is None:
-        # In thon 3, the metafile default access craps out on Windows (but not Linux)
-        # Read the names file and create a list to feed to detect
-        try:
-            with open(meta_path) as meta_fh:
-                meta_contents = meta_fh.read()
-                import re
-                match = re.search("names *= *(.*)$", meta_contents,
-                                  re.IGNORECASE | re.MULTILINE)
-                if match:
-                    result = match.group(1)
-                else:
-                    result = None
-                try:
-                    if os.path.exists(result):
-                        with open(result) as names_fh:
-                            names_list = names_fh.read().strip().split("\n")
-                            altNames = [x.strip() for x in names_list]
-                except TypeError:
-                    pass
-        except Exception:
-            pass
+    # # Import the global variables. This lets us instance Darknet once,
+    # # then just call performDetect() again without instancing again
+    # global metaMain, netMain, altNames  # pylint: disable=W0603
+    # assert 0 < thresh < 1, "Threshold should be a float between zero and one (non-inclusive)"
+    # if not os.path.exists(config_path):
+    #     raise ValueError("Invalid config path `" +
+    #                      os.path.abspath(config_path)+"`")
+    # if not os.path.exists(weight_path):
+    #     raise ValueError("Invalid weight path `" +
+    #                      os.path.abspath(weight_path)+"`")
+    # if not os.path.exists(meta_path):
+    #     raise ValueError("Invalid data file path `" +
+    #                      os.path.abspath(meta_path)+"`")
+    # if netMain is None:
+    #     netMain = load_net_custom(config_path.encode(
+    #         "ascii"), weight_path.encode("ascii"), 0, 1)  # batch size = 1
+    # if metaMain is None:
+    #     metaMain = load_meta(meta_path.encode("ascii"))
+    # if altNames is None:
+    #     # In thon 3, the metafile default access craps out on Windows (but not Linux)
+    #     # Read the names file and create a list to feed to detect
+    #     try:
+    #         with open(meta_path) as meta_fh:
+    #             meta_contents = meta_fh.read()
+    #             import re
+    #             match = re.search("names *= *(.*)$", meta_contents,
+    #                               re.IGNORECASE | re.MULTILINE)
+    #             if match:
+    #                 result = match.group(1)
+    #             else:
+    #                 result = None
+    #             try:
+    #                 if os.path.exists(result):
+    #                     with open(result) as names_fh:
+    #                         names_list = names_fh.read().strip().split("\n")
+    #                         altNames = [x.strip() for x in names_list]
+    #             except TypeError:
+    #                 pass
+    #     except Exception:
+    #         pass
 
-    color_array = generate_color(meta_path)
+    # color_array = generate_color(meta_path)
 
     log.info("Running...")
     calibration_params = cam.get_camera_information().calibration_parameters
@@ -523,106 +488,38 @@ def main(argv):
     print("p1", calibration_params.left_cam.disto[2])
     print("p2", calibration_params.left_cam.disto[3])
     print("k3", calibration_params.left_cam.disto[4])
-
-    print("image size", calibration_params.left_cam.image_size.width, calibration_params.left_cam.image_size.height)
-
+    w = calibration_params.left_cam.image_size.width
+    h = calibration_params.left_cam.image_size.height
+    x_upper = int(w/2 + 40)
+    x_lower = int(w/2 - 40)
+    y_upper = int(h/2 + 40)
+    y_lower = int(h/2 - 40)
+    print(x_upper, x_lower, y_upper, y_lower)
+    print(x_upper)
+    print("image size", w, h)
+    imgpoints = [] # 2d points in image plane.
     key = ''
-    depth_map = sl.Mat()
-    while key != 113:  # for 'q' key
-        start_time = time.time() # start time of the loop
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    while key != 113:
         err = cam.grab(runtime)
         if err == sl.ERROR_CODE.SUCCESS:
-            
             cam.retrieve_image(mat, sl.VIEW.LEFT)
-            image = mat.get_data()
-            cam.retrieve_image(mat_right, sl.VIEW.RIGHT)
-            right_image = mat_right.get_data()
-
-            cam.retrieve_measure(
-                point_cloud_mat, sl.MEASURE.XYZRGBA)
-            depth = point_cloud_mat.get_data()
-            cam.retrieve_measure(
-                depth_map, sl.MEASURE.DEPTH)
-            # Do the detection
-            detections = detect(netMain, metaMain, image, thresh)
-
-            log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
-            boundingboxes = []
-            find_target(depth_map)
-            # Create check frame
-            h, w, c = image.shape
-            check_img = np.full((h, w, 4), (0, 0, 0, 0), np.uint8)
-            id = 0
-            for detection in detections:
-                label = detection[0]
-                confidence = detection[1]
-                pstring = label+": "+str(np.rint(100 * confidence))+"%"
-                log.info(pstring)
-                bounds = detection[2]
-                y_extent = int(bounds[3])
-                x_extent = int(bounds[2])
-                # Coordinates are around the center
-                x_coord = int(bounds[0] - bounds[2]/2)
-                y_coord = int(bounds[1] - bounds[3]/2)
-                #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
-                thickness = 1
-                x, y, z = get_object_depth(depth, bounds)
-                box = centerBdbox()
-                box.probability = confidence
-                box.x_cen = int(bounds[0])
-                box.y_cen = int(bounds[1])
-                box.width = int(bounds[2])
-                box.height = int(bounds[3])
-                box.Class = label
-                box.id = id
-                id += 1
-
-                boundingboxes.append(box)
-
-                distance = math.sqrt(x * x + y * y + z * z)
-                distance = "{:.2f}".format(distance)
-                cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
-                              (x_coord + x_extent + thickness, y_coord + (18 + thickness*4)),
-                              color_array[detection[3]], -1)
-                cv2.putText(image, label + " " +  (str(distance) + " m"),
-                            (x_coord + (thickness * 4), y_coord + (10 + thickness * 4)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
-                              (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
-                              color_array[detection[3]], int(thickness*2))
-
-            t = rospy.get_rostime()
-            # Publish left and right image for Slam
-            from cv_bridge import CvBridge
-            bridge = CvBridge()
-            left_msg_frame = bridge.cv2_to_imgmsg(image)
-            right_msg_frame = bridge.cv2_to_imgmsg(right_image)
-            left_msg_frame.encoding = "bgra8"
-            right_msg_frame.encoding = "bgra8"
-            left_msg_frame.header = Header()
-            left_msg_frame.header.stamp = t;
-            left_msg_frame.header.frame_id = "camera_left";
-            right_msg_frame.header = Header()
-            right_msg_frame.header.stamp = t;
-            right_msg_frame.header.frame_id = "camera_right";
-
-            boundingbox_msg = centerBdboxes()
-            boundingbox_msg.header = Header()
-            boundingbox_msg.header.stamp = t;
-            boundingbox_msg.header.frame_id = "object_detection"
-            boundingbox_msg.centerBdboxes = boundingboxes
-
-            left_img_pub.publish(left_msg_frame)
-            right_img_pub.publish(right_msg_frame)
-            # if boundingboxes != []:
-            boundingbox_pub.publish(boundingbox_msg)
-    
-            cv2.imshow("ZED", image)
-
+            img = mat.get_data()
+            # cam.retrieve_image(mat_right, sl.VIEW.RIGHT)
+            # right_image = mat_right.get_data()
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            corners = cv2.goodFeaturesToTrack(gray,25,0.01,10)
+            corners = np.int0(corners)
+            cv2.rectangle(img, (x_lower, y_lower), (x_upper, y_upper), (255, 0, 0), 2)
+            for i in corners:
+                x,y = i.ravel()
+                if x > x_lower and x < x_upper and y > y_lower and y < y_upper:
+                    print(x,y)
+                    cv2.circle(img,(x,y),3,255,-1)
+            
+            cv2.imshow('img', img)
             key = cv2.waitKey(5)
-            log.info("FPS: {}".format(1.0 / (time.time() - start_time)))
-        else:
-            key = cv2.waitKey(5)
+
     cv2.destroyAllWindows()
 
     cam.close()
