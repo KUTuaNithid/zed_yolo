@@ -29,15 +29,15 @@ from sensor_msgs.msg import Image
 
 from std_msgs.msg import Header
 from std_msgs.msg import String
-from darknet_ros_msgs.msg import LabelPointcloud
-from darknet_ros_msgs.msg import LabelPointclouds
-
+from darknet_ros_msgs.msg import centerBdbox
+from darknet_ros_msgs.msg import centerBdboxes
+from darknet_ros_msgs.srv import get_camParam, get_camParamResponse
 
 # Public image for openvslam
 left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
 right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
 blend_img_pub = rospy.Publisher('/camera/blend/image_raw', Image, queue_size=10)
-label_point_pub = rospy.Publisher('/camera/label_pointcloud', LabelPointclouds, queue_size=10)
+boundingbox_pub = rospy.Publisher('camera/boundingbox', centerBdboxes, queue_size=10)
 rospy.init_node('zedImage', anonymous=True)
 
 
@@ -97,7 +97,7 @@ class METADATA(Structure):
                 ("names", POINTER(c_char_p))]
 
 
-#lib = CDLL("/home/pjreddie/documents/darknet/libdarknet.so", RTLD_GLOBAL)
+#lib = CDLL("/home/docker/catkin_ws/src/zed_yolo/src/libdarknet/libdarknet.so", RTLD_GLOBAL)
 #lib = CDLL("darknet.so", RTLD_GLOBAL)
 hasGPU = True
 if os.name == "nt":
@@ -143,7 +143,7 @@ if os.name == "nt":
             log.warning("Environment variables indicated a CPU run, but we didn't find `" +
                         winNoGPUdll+"`. Trying a GPU run anyway.")
 else:
-    lib = CDLL("libdarknet/libdarknet.so", RTLD_GLOBAL)
+    lib = CDLL("/home/docker/catkin_ws/src/zed_yolo/src/libdarknet/libdarknet.so", RTLD_GLOBAL)
 lib.network_width.argtypes = [c_void_p]
 lib.network_width.restype = c_int
 lib.network_height.argtypes = [c_void_p]
@@ -294,7 +294,6 @@ def get_object_depth(depth, bounds):
             bounds[1]: y-center
             bounds[2]: width of bounding box.
             bounds[3]: height of bounding box.
-
     Return:
         x, y, z: Location of object in meters.
     '''
@@ -303,7 +302,6 @@ def get_object_depth(depth, bounds):
     x_vect = []
     y_vect = []
     z_vect = []
-
     for j in range(int(bounds[0] - area_div), int(bounds[0] + area_div)):
         for i in range(int(bounds[1] - area_div), int(bounds[1] + area_div)):
             z = depth[i, j, 2]
@@ -323,6 +321,36 @@ def get_object_depth(depth, bounds):
 
     return x_median, y_median, z_median
 
+def get_depth(depth, bounds):
+    '''
+    Calculates the median x, y, z position of top slice(area_div) of point cloud
+    in camera frame.
+    Arguments:
+        depth: Point cloud data of whole frame.
+        bounds: Bounding box for object in pixels.
+            bounds[0]: x-center
+            bounds[1]: y-center
+            bounds[2]: width of bounding box.
+            bounds[3]: height of bounding box.
+    Return:
+        x, y, z: Location of object in meters.
+    '''
+    area_div = 2
+
+    z_vect = []
+    for j in range(int(bounds[0] - area_div), int(bounds[0] + area_div)):
+        for i in range(int(bounds[1] - area_div), int(bounds[1] + area_div)):
+            ret, z = depth.get_value(i, j)
+            if str(ret) == 'SUCCESS' and not np.isnan(z) and not np.isinf(z):
+                z_vect.append(z)
+    try:
+        z_median = statistics.median(z_vect)
+    except Exception:
+        z_median = -1
+        pass
+
+    return z_median
+
 def get_target_pcl(depth, bounds):
     '''
     Calculates the median x, y, z position of top slice(area_div) of point cloud
@@ -334,7 +362,6 @@ def get_target_pcl(depth, bounds):
             bounds[1]: y-center
             bounds[2]: width of bounding box.
             bounds[3]: height of bounding box.
-
     Return:
         x, y, z: Location of object in meters.
     '''
@@ -370,17 +397,34 @@ def generate_color(meta_path):
         color_array.append((randint(0, 255), randint(0, 255), randint(0, 255)))
     return color_array
 
+def handle_get_camParam(request):
+    global calibration_params
+    response = get_camParamResponse()
+    response.fx= calibration_params.left_cam.fx
+    response.fy= calibration_params.left_cam.fy
+    response.cx= calibration_params.left_cam.cx
+    response.cy= calibration_params.left_cam.cy
+    response.k1= calibration_params.left_cam.disto[0]
+    response.k2= calibration_params.left_cam.disto[1]
+    response.p1= calibration_params.left_cam.disto[2]
+    response.p2= calibration_params.left_cam.disto[3]
+    response.k3= calibration_params.left_cam.disto[4]
+    response.focal_x_baseline= response.fx * calibration_params.get_camera_baseline()
+
+    return response
+
+rospy.Service('add_two_ints', get_camParam, handle_get_camParam)
 
 def main(argv):
 
     thresh = 0.25
-    darknet_path="libdarknet/"
+    darknet_path="/home/docker/catkin_ws/src/zed_yolo/src/libdarknet/"
     config_path = darknet_path + "cfg/yolov3.cfg"
     weight_path = darknet_path + "weights/yolov3.weights"
     meta_path = darknet_path + "cfg/coco.data"
     svo_path = None
     zed_id = 0
-
+    
     help_str = 'darknet_zed.py -c <config> -w <weight> -m <meta> -t <threshold> -s <svo_file> -z <zed_id>'
     try:
         opts, args = getopt.getopt(
@@ -415,6 +459,8 @@ def main(argv):
 
     init = sl.InitParameters(input_t=input_type)
     init.coordinate_units = sl.UNIT.METER
+    init.depth_mode = sl.DEPTH_MODE.ULTRA
+    init.depth_minimum_distance = 0.2
 
     cam = sl.Camera()
     if not cam.is_opened():
@@ -423,12 +469,16 @@ def main(argv):
     if status != sl.ERROR_CODE.SUCCESS:
         log.error(repr(status))
         exit()
-
+    
+    global calibration_params
     runtime = sl.RuntimeParameters()
     # Use STANDARD sensing mode
     runtime.sensing_mode = sl.SENSING_MODE.STANDARD
     mat = sl.Mat()
+    r_mat = sl.Mat()
     point_cloud_mat = sl.Mat()
+    calibration_params = cam.get_camera_information().calibration_parameters
+    print("FX", calibration_params.left_cam.fx)
 
     # Import the global variables. This lets us instance Darknet once,
     # then just call performDetect() again without instancing again
@@ -474,7 +524,7 @@ def main(argv):
     color_array = generate_color(meta_path)
 
     log.info("Running...")
-
+    depth_map = sl.Mat()
     key = ''
     while key != 113:  # for 'q' key
         start_time = time.time() # start time of the loop
@@ -482,20 +532,20 @@ def main(argv):
         if err == sl.ERROR_CODE.SUCCESS:
             
             cam.retrieve_image(mat, sl.VIEW.LEFT)
-            cam.retrieve_image(mat, sl.VIEW.LEFT)
+            cam.retrieve_image(r_mat, sl.VIEW.RIGHT)
             image = mat.get_data()
-            right_image = mat.get_data()
+            left_image = mat.get_data()
+            right_image = r_mat.get_data()
 
             cam.retrieve_measure(
-                point_cloud_mat, sl.MEASURE.XYZRGBA)
-            depth = point_cloud_mat.get_data()
-
+                depth_map, sl.MEASURE.DEPTH)
             # Do the detection
             detections = detect(netMain, metaMain, image, thresh)
 
             log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
+            boundingboxes = []
             labelPoints = []
-
+            id = 0
             # Create check frame
             h, w, c = image.shape
             check_img = np.full((h, w, 4), (0, 0, 0, 0), np.uint8)
@@ -512,62 +562,57 @@ def main(argv):
                 y_coord = int(bounds[1] - bounds[3]/2)
                 #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
                 thickness = 1
-                x, y, z = get_object_depth(depth, bounds)
-                list = get_target_pcl(depth, bounds)
+                depth = get_depth(depth_map, bounds)
+                box = centerBdbox()
+                box.probability = confidence
+                box.x_cen = int(bounds[0])
+                box.y_cen = int(bounds[1])
+                box.width = int(bounds[2])
+                box.height = int(bounds[3])
+                box.Class = label
+                box.id = id
+                box.depth = depth
+                print(label, depth)
+                id += 1
+                boundingboxes.append(box)
 
-                if list:
-                    for data in list:
-                        i, j = data['pixel']
-                        check_img[i, j, 0] = 255
-                        check_img[i, j, 1] = 255
-                        check_img[i, j, 2] = 255
-
-                        pt = LabelPointcloud()
-                        x, y, z = data['point']
-                        pt.x = x
-                        pt.y = y
-                        pt.z = z
-                        pt.label = label
-                        labelPoints.append(pt)
-
-                distance = math.sqrt(x * x + y * y + z * z)
-                distance = "{:.2f}".format(distance)
                 cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
                               (x_coord + x_extent + thickness, y_coord + (18 + thickness*4)),
                               color_array[detection[3]], -1)
-                cv2.putText(image, label + " " +  (str(distance) + " m"),
+                cv2.putText(image, label + " " +  (str("{:.2f}".format(depth)) + " m"),
                             (x_coord + (thickness * 4), y_coord + (10 + thickness * 4)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
                               (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
                               color_array[detection[3]], int(thickness*2))
 
-            pointCloud_msg = LabelPointclouds()
-            header = Header()
-            header.frame_id = "label_pointcloud"
-            pointCloud_msg.header = header
-            pointCloud_msg.pClouds = labelPoints
-
+            t = rospy.get_rostime()
             # Publish left and right image for Slam
             from cv_bridge import CvBridge
-            left_msg_frame = CvBridge().cv2_to_imgmsg(image)
+            bridge = CvBridge()
+            left_msg_frame = bridge.cv2_to_imgmsg(left_image)
+            right_msg_frame = bridge.cv2_to_imgmsg(right_image)
             left_msg_frame.encoding = "bgra8"
-            right_msg_frame = CvBridge().cv2_to_imgmsg(right_image)
             right_msg_frame.encoding = "bgra8"
+            left_msg_frame.header = Header()
+            left_msg_frame.header.stamp = t;
+            left_msg_frame.header.frame_id = "camera_left";
+            right_msg_frame.header = Header()
+            right_msg_frame.header.stamp = t;
+            right_msg_frame.header.frame_id = "camera_right";
+
+            boundingbox_msg = centerBdboxes()
+            boundingbox_msg.header = Header()
+            boundingbox_msg.header.stamp = t;
+            boundingbox_msg.header.frame_id = "object_detection"
+            boundingbox_msg.centerBdboxes = boundingboxes
+
             left_img_pub.publish(left_msg_frame)
             right_img_pub.publish(right_msg_frame)
-            label_point_pub.publish(pointCloud_msg)
+            boundingbox_pub.publish(boundingbox_msg)
             
-            # [blend_images]
-            alpha = 0.7
-            beta = (1.0 - alpha)
-            dst = cv2.addWeighted(image, alpha, check_img, beta, 0.0)
             cv2.imshow("ZED", image)
-            cv2.imshow("check", check_img)
-            cv2.imshow("blend", dst)
-            bld_msg_frame = CvBridge().cv2_to_imgmsg(dst)
-            bld_msg_frame.encoding = "bgra8"
-            blend_img_pub.publish(bld_msg_frame)
+
             key = cv2.waitKey(5)
             log.info("FPS: {}".format(1.0 / (time.time() - start_time)))
         else:
