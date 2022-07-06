@@ -34,6 +34,7 @@ from darknet_ros_msgs.msg import centerBdboxes
 from darknet_ros_msgs.srv import get_camParam, get_camParamResponse
 
 # Public image for openvslam
+vis_img_pub = rospy.Publisher('/camera/vis', Image, queue_size=10)
 left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
 right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
 blend_img_pub = rospy.Publisher('/camera/blend/image_raw', Image, queue_size=10)
@@ -341,7 +342,9 @@ def get_depth(depth, bounds):
     for j in range(int(bounds[0] - area_div), int(bounds[0] + area_div)):
         for i in range(int(bounds[1] - area_div), int(bounds[1] + area_div)):
             ret, z = depth.get_value(i, j)
-            if str(ret) == 'SUCCESS' and not np.isnan(z) and not np.isinf(z):
+            # print(ret, z)
+            # if str(ret) == 'SUCCESS' and not np.isnan(z) and not np.isinf(z):
+            if not np.isnan(z) and not np.isinf(z):
                 z_vect.append(z)
     try:
         z_median = statistics.median(z_vect)
@@ -409,7 +412,7 @@ def handle_get_camParam(request):
     response.p1= calibration_params.left_cam.disto[2]
     response.p2= calibration_params.left_cam.disto[3]
     response.k3= calibration_params.left_cam.disto[4]
-    response.focal_x_baseline= response.fx * calibration_params.get_camera_baseline()
+    response.focal_x_baseline= calibration_params.left_cam.fx * calibration_params.get_camera_baseline()
 
     return response
 
@@ -478,8 +481,16 @@ def main(argv):
     r_mat = sl.Mat()
     point_cloud_mat = sl.Mat()
     calibration_params = cam.get_camera_information().calibration_parameters
-    print("FX", calibration_params.left_cam.fx)
-
+    print("fx", calibration_params.left_cam.fx)
+    print("fy", calibration_params.left_cam.fy)
+    print("cx", calibration_params.left_cam.cx)
+    print("cy", calibration_params.left_cam.cy)
+    print("k1", calibration_params.left_cam.disto[0])
+    print("k2", calibration_params.left_cam.disto[1])
+    print("p1", calibration_params.left_cam.disto[2])
+    print("p2", calibration_params.left_cam.disto[3])
+    print("k3", calibration_params.left_cam.disto[4])
+    print("focal_x_baseline", calibration_params.left_cam.fx * calibration_params.get_camera_baseline())
     # Import the global variables. This lets us instance Darknet once,
     # then just call performDetect() again without instancing again
     global metaMain, netMain, altNames  # pylint: disable=W0603
@@ -572,7 +583,7 @@ def main(argv):
                 box.Class = label
                 box.id = id
                 box.depth = depth
-                print(label, depth)
+                # print(label, depth)
                 id += 1
                 boundingboxes.append(box)
 
@@ -590,10 +601,18 @@ def main(argv):
             # Publish left and right image for Slam
             from cv_bridge import CvBridge
             bridge = CvBridge()
+            vis_msg_frame = bridge.cv2_to_imgmsg(image)
             left_msg_frame = bridge.cv2_to_imgmsg(left_image)
             right_msg_frame = bridge.cv2_to_imgmsg(right_image)
+
+            vis_msg_frame.encoding = "bgra8"
             left_msg_frame.encoding = "bgra8"
             right_msg_frame.encoding = "bgra8"
+
+            vis_msg_frame.header = Header()
+            vis_msg_frame.header.stamp = t;
+            vis_msg_frame.header.frame_id = "vis";
+
             left_msg_frame.header = Header()
             left_msg_frame.header.stamp = t;
             left_msg_frame.header.frame_id = "camera_left";
@@ -606,7 +625,8 @@ def main(argv):
             boundingbox_msg.header.stamp = t;
             boundingbox_msg.header.frame_id = "object_detection"
             boundingbox_msg.centerBdboxes = boundingboxes
-
+            
+            vis_img_pub.publish(vis_msg_frame)
             left_img_pub.publish(left_msg_frame)
             right_img_pub.publish(right_msg_frame)
             boundingbox_pub.publish(boundingbox_msg)
