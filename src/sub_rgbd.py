@@ -33,13 +33,131 @@ from darknet_ros_msgs.msg import centerBdbox
 from darknet_ros_msgs.msg import centerBdboxes
 from darknet_ros_msgs.srv import get_camParam, get_camParamResponse
 
+import message_filters
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
+rospy.init_node('subRGBD', anonymous=True)
+image_sub = message_filters.Subscriber('/camera/rgb/image_color', Image)
+depth_sub = message_filters.Subscriber('/camera/depth/image', Image)
+
+ts = message_filters.ApproximateTimeSynchronizer([image_sub, depth_sub], 10, 0.1, allow_headerless=True)
+
+fourcc = cv2.VideoWriter_fourcc(*'XVID')
+out = cv2.VideoWriter('/home/docker/output.avi', fourcc, 20.0, (640,480))
+
+def callback(ros_image, ros_depth):
+    global thresh, color_array, cap, out
+    bridge = CvBridge()
+    image = CvBridge().imgmsg_to_cv2(ros_image, "bgr8")
+    image_raw = bridge.imgmsg_to_cv2(ros_image, "bgr8")
+    depth_img = bridge.imgmsg_to_cv2(ros_depth, "32FC1")
+    thresh = 0.5
+    # Do the detection
+    detections = detect(netMain, metaMain, image, thresh)
+
+    log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
+    boundingboxes = []
+    labelPoints = []
+    id = 0
+    # Create check frame
+    h, w, c = image.shape
+    for detection in detections:
+        label = detection[0]
+        id = get_id(label)
+        if id == -1:
+            continue
+        confidence = detection[1]
+        # pstring = label+": "+str(np.int(100 * confidence))+"%"
+        # log.info(pstring)
+        bounds = detection[2]
+        y_extent = int(bounds[3])
+        x_extent = int(bounds[2])
+        # Coordinates are around the center
+        x_coord = int(bounds[0] - bounds[2]/2)
+        y_coord = int(bounds[1] - bounds[3]/2)
+        #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
+        thickness = 1
+        depth = get_depth(depth_img, bounds)
+        box = centerBdbox()
+        box.probability = confidence
+        box.x_cen = int(bounds[0])
+        box.y_cen = int(bounds[1])
+        box.width = int(bounds[2])
+        box.height = int(bounds[3])
+        box.Class = label
+        box.id = id
+        box.depth = depth
+        # print(label, depth)
+        # id += 1
+        boundingboxes.append(box)
+        weight = (bounds[2]*bounds[3])*0.05
+        area_div = math.sqrt(weight)/2
+        cv2.rectangle(image, (int(bounds[0] - area_div)- thickness, int(bounds[1] - area_div)-thickness),
+                        (int(bounds[0] + area_div) + thickness, int(bounds[1] + area_div)+thickness),
+                        color_array[detection[3]], int(thickness*2))
+
+        cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
+                        (x_coord + x_extent + thickness, y_coord + (18 + thickness*4)),
+                        color_array[detection[3]], -1)
+        cv2.putText(image, label + " " +  (str("{:.2f}".format(depth)) + " m"),
+                    (x_coord + (thickness * 4), y_coord + (10 + thickness * 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
+                        (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
+                        color_array[detection[3]], int(thickness*2))
+
+    t = rospy.get_rostime()
+    # Publish left and right image for Slam
+    bridge = CvBridge()
+    vis_msg_frame = bridge.cv2_to_imgmsg(image)
+    img_msg_frame = bridge.cv2_to_imgmsg(image_raw)
+    depth_msg_frame = bridge.cv2_to_imgmsg(depth_img)
+
+    vis_msg_frame.encoding = "rgb8"
+    img_msg_frame.encoding = "rgb8"
+    depth_msg_frame.encoding = "32FC1"
+
+    vis_msg_frame.header = Header()
+    vis_msg_frame.header.stamp = t;
+    vis_msg_frame.header.frame_id = "vis";
+
+    img_msg_frame.header = Header()
+    img_msg_frame.header.stamp = t;
+    img_msg_frame.header.frame_id = "camera_left";
+    depth_msg_frame.header = Header()
+    depth_msg_frame.header.stamp = t;
+    depth_msg_frame.header.frame_id = "camera_right";
+
+    boundingbox_msg = centerBdboxes()
+    boundingbox_msg.header = Header()
+    boundingbox_msg.header.stamp = t;
+    boundingbox_msg.header.frame_id = "object_detection"
+    boundingbox_msg.centerBdboxes = boundingboxes
+    
+    vis_img_pub.publish(vis_msg_frame)
+    img_pub.publish(img_msg_frame)
+    depth_pub.publish(depth_msg_frame)
+    boundingbox_pub.publish(boundingbox_msg)
+    
+    out.write(image)
+    cv2.imshow("ZED", image)
+    cv2.waitKey(1)
+    # cv2.destroyAllWindows()
+
+
+
+
+ts.registerCallback(callback)
+
 # Public image for openvslam
 vis_img_pub = rospy.Publisher('/camera/vis', Image, queue_size=10)
-left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
-right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
+img_pub = rospy.Publisher('/camera/image_raw', Image, queue_size=10)
+depth_pub = rospy.Publisher('/camera/image_depth', Image, queue_size=10)
+# img_pub = rospy.Publisher('/camera/rgb/image_color', Image, queue_size=10)
+# depth_pub = rospy.Publisher('/camera/depth/image', Image, queue_size=10)
 blend_img_pub = rospy.Publisher('/camera/blend/image_raw', Image, queue_size=10)
 boundingbox_pub = rospy.Publisher('camera/boundingbox', centerBdboxes, queue_size=10)
-rospy.init_node('zedImage', anonymous=True)
 
 
 # Get the top-level logger object
@@ -336,12 +454,14 @@ def get_depth(depth, bounds):
     Return:
         x, y, z: Location of object in meters.
     '''
-    area_div = 2
+    weight = (bounds[2]*bounds[3])*0.05
+    area_div = math.sqrt(weight)/2
+    # area_div = 5
 
     z_vect = []
     for j in range(int(bounds[0] - area_div), int(bounds[0] + area_div)):
         for i in range(int(bounds[1] - area_div), int(bounds[1] + area_div)):
-            ret, z = depth.get_value(i, j)
+            z = depth[i, j]
             # print(ret, z)
             # if str(ret) == 'SUCCESS' and not np.isnan(z) and not np.isinf(z):
             if not np.isnan(z) and not np.isinf(z):
@@ -418,8 +538,27 @@ def handle_get_camParam(request):
 
 rospy.Service('add_two_ints', get_camParam, handle_get_camParam)
 
-def main(argv):
+target_obj = {"bottle":1,
+"cup":2,
+"tvmonitor":3,
+"laptop":4,
+"mouse":5,
+"remote":6,
+"keyboard":7,
+"cell phone":8,
+"chair":9,
+"diningtable":10,
+"book":11,
+"teddy bear":12}
 
+def get_id(label):
+    if label in target_obj:
+        return target_obj[label]
+    else:
+        return -1
+
+def main(argv):
+    global thresh, color_array, cap, out
     thresh = 0.25
     darknet_path="/home/docker/catkin_ws/src/zed_yolo/src/libdarknet/"
     config_path = darknet_path + "cfg/yolov3.cfg"
@@ -460,37 +599,6 @@ def main(argv):
         # Launch camera by id
         input_type.set_from_camera_id(zed_id)
 
-    init = sl.InitParameters(input_t=input_type)
-    init.coordinate_units = sl.UNIT.METER
-    init.depth_mode = sl.DEPTH_MODE.ULTRA
-    init.depth_minimum_distance = 0.2
-
-    cam = sl.Camera()
-    if not cam.is_opened():
-        log.info("Opening ZED Camera...")
-    status = cam.open(init)
-    if status != sl.ERROR_CODE.SUCCESS:
-        log.error(repr(status))
-        exit()
-    
-    global calibration_params
-    runtime = sl.RuntimeParameters()
-    # Use STANDARD sensing mode
-    runtime.sensing_mode = sl.SENSING_MODE.STANDARD
-    mat = sl.Mat()
-    r_mat = sl.Mat()
-    point_cloud_mat = sl.Mat()
-    calibration_params = cam.get_camera_information().calibration_parameters
-    print("fx", calibration_params.left_cam.fx)
-    print("fy", calibration_params.left_cam.fy)
-    print("cx", calibration_params.left_cam.cx)
-    print("cy", calibration_params.left_cam.cy)
-    print("k1", calibration_params.left_cam.disto[0])
-    print("k2", calibration_params.left_cam.disto[1])
-    print("p1", calibration_params.left_cam.disto[2])
-    print("p2", calibration_params.left_cam.disto[3])
-    print("k3", calibration_params.left_cam.disto[4])
-    print("focal_x_baseline", calibration_params.left_cam.fx * calibration_params.get_camera_baseline())
     # Import the global variables. This lets us instance Darknet once,
     # then just call performDetect() again without instancing again
     global metaMain, netMain, altNames  # pylint: disable=W0603
@@ -534,112 +642,67 @@ def main(argv):
 
     color_array = generate_color(meta_path)
 
-    log.info("Running...")
-    depth_map = sl.Mat()
-    key = ''
-    while key != 113:  # for 'q' key
-        start_time = time.time() # start time of the loop
-        err = cam.grab(runtime)
-        if err == sl.ERROR_CODE.SUCCESS:
-            
-            cam.retrieve_image(mat, sl.VIEW.LEFT)
-            cam.retrieve_image(r_mat, sl.VIEW.RIGHT)
-            image = mat.get_data()
-            left_image = mat.get_data()
-            right_image = r_mat.get_data()
+    if True:
+        rospy.spin()
+    else:
+        import csv
+        import sys
+        import ast
+        import pandas as pd
+        maxInt = sys.maxsize
+        print('maxInt', maxInt)
+        csv.field_size_limit(maxInt)
+        img_file = '/home/docker/dataset/long_office/rgb/2000.csv'
+        depth_file = '/home/docker/dataset/long_office/depth/2000.csv'
+        # img_file = '/home/docker/dataset/rgbd_dataset_freiburg2_large_no_loop/rgb/2500.csv'
+        # depth_file = '/home/docker/dataset/rgbd_dataset_freiburg2_large_no_loop/depth/2500.csv'
+        # img_file = '/home/docker/dataset/rgbd_dataset_freiburg2_large_with_loop/rgb/2500.csv'
+        # depth_file = '/home/docker/dataset/rgbd_dataset_freiburg2_large_with_loop/depth/2500.csv'
+        # img_file = '/home/docker/dataset/rgbd_dataset_freiburg3_walking_xyz_fix/rgb/200.csv'
+        # depth_file = '/home/docker/dataset/rgbd_dataset_freiburg3_walking_xyz_fix/depth/200.csv'
+        # b = bagreader(filename)
+        # img_msg = b.message_by_topic('/camera/rgb/image_color')
+        # img_msg
+        df_img = pd.read_csv(img_file, engine='python', error_bad_lines=False)
+        df_depth = pd.read_csv(depth_file, engine='python', error_bad_lines=False)
+        # seq_img = df_img.sample(n = 15)
+        # seq_depth = df_depth.iloc[seq_img.index]
+        seq_img = df_img
+        seq_depth = df_depth
 
-            cam.retrieve_measure(
-                depth_map, sl.MEASURE.DEPTH)
-            # Do the detection
-            detections = detect(netMain, metaMain, image, thresh)
+        # for i in seq_img.index:
+        while True:
+            i = int(input("Enter frame"))
+            img_msg = Image()
+            img_msg.header.seq = seq_img['header.seq'][i]
+            img_msg.header.stamp.secs = seq_img['header.stamp.secs'][i]
+            img_msg.header.stamp.nsecs = seq_img['header.stamp.nsecs'][i]
+            img_msg.header.frame_id = seq_img['header.frame_id'][i]
+            img_msg.height = seq_img['height'][i]
+            img_msg.width = seq_img['width'][i]
+            img_msg.encoding = seq_img['encoding'][i]
+            img_msg.is_bigendian = seq_img['is_bigendian'][i]
+            img_msg.step = seq_img['step'][i]
+            img_msg.data = ast.literal_eval(seq_img['data'][i])
 
-            log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
-            boundingboxes = []
-            labelPoints = []
-            id = 0
-            # Create check frame
-            h, w, c = image.shape
-            check_img = np.full((h, w, 4), (0, 0, 0, 0), np.uint8)
-            for detection in detections:
-                label = detection[0]
-                confidence = detection[1]
-                pstring = label+": "+str(np.rint(100 * confidence))+"%"
-                log.info(pstring)
-                bounds = detection[2]
-                y_extent = int(bounds[3])
-                x_extent = int(bounds[2])
-                # Coordinates are around the center
-                x_coord = int(bounds[0] - bounds[2]/2)
-                y_coord = int(bounds[1] - bounds[3]/2)
-                #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
-                thickness = 1
-                depth = get_depth(depth_map, bounds)
-                box = centerBdbox()
-                box.probability = confidence
-                box.x_cen = int(bounds[0])
-                box.y_cen = int(bounds[1])
-                box.width = int(bounds[2])
-                box.height = int(bounds[3])
-                box.Class = label
-                box.id = id
-                box.depth = depth
-                # print(label, depth)
-                id += 1
-                boundingboxes.append(box)
+            depth_msg = Image()
+            depth_msg.header.seq = seq_depth['header.seq'][i]
+            depth_msg.header.stamp.secs = seq_depth['header.stamp.secs'][i]
+            depth_msg.header.stamp.nsecs = seq_depth['header.stamp.nsecs'][i]
+            depth_msg.header.frame_id = seq_depth['header.frame_id'][i]
+            depth_msg.height = seq_depth['height'][i]
+            depth_msg.width = seq_depth['width'][i]
+            depth_msg.encoding = seq_depth['encoding'][i]
+            depth_msg.is_bigendian = seq_depth['is_bigendian'][i]
+            depth_msg.step = seq_depth['step'][i]
+            depth_msg.data = ast.literal_eval(seq_depth['data'][i])
 
-                cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
-                              (x_coord + x_extent + thickness, y_coord + (18 + thickness*4)),
-                              color_array[detection[3]], -1)
-                cv2.putText(image, label + " " +  (str("{:.2f}".format(depth)) + " m"),
-                            (x_coord + (thickness * 4), y_coord + (10 + thickness * 4)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
-                              (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
-                              color_array[detection[3]], int(thickness*2))
-
-            t = rospy.get_rostime()
-            # Publish left and right image for Slam
-            from cv_bridge import CvBridge
-            bridge = CvBridge()
-            vis_msg_frame = bridge.cv2_to_imgmsg(image)
-            left_msg_frame = bridge.cv2_to_imgmsg(left_image)
-            right_msg_frame = bridge.cv2_to_imgmsg(right_image)
-
-            vis_msg_frame.encoding = "bgra8"
-            left_msg_frame.encoding = "bgra8"
-            right_msg_frame.encoding = "bgra8"
-
-            vis_msg_frame.header = Header()
-            vis_msg_frame.header.stamp = t;
-            vis_msg_frame.header.frame_id = "vis";
-
-            left_msg_frame.header = Header()
-            left_msg_frame.header.stamp = t;
-            left_msg_frame.header.frame_id = "camera_left";
-            right_msg_frame.header = Header()
-            right_msg_frame.header.stamp = t;
-            right_msg_frame.header.frame_id = "camera_right";
-
-            boundingbox_msg = centerBdboxes()
-            boundingbox_msg.header = Header()
-            boundingbox_msg.header.stamp = t;
-            boundingbox_msg.header.frame_id = "object_detection"
-            boundingbox_msg.centerBdboxes = boundingboxes
-            
-            vis_img_pub.publish(vis_msg_frame)
-            left_img_pub.publish(left_msg_frame)
-            right_img_pub.publish(right_msg_frame)
-            boundingbox_pub.publish(boundingbox_msg)
-            
-            cv2.imshow("ZED", image)
-
-            key = cv2.waitKey(5)
-            log.info("FPS: {}".format(1.0 / (time.time() - start_time)))
-        else:
-            key = cv2.waitKey(5)
+            callback(img_msg, depth_msg)
+            # time.sleep(10)
+    
+    out.release()
     cv2.destroyAllWindows()
-
-    cam.close()
+    print("DOBNE")
     log.info("\nFINISH")
 
 

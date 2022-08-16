@@ -34,7 +34,6 @@ from darknet_ros_msgs.msg import centerBdboxes
 from darknet_ros_msgs.srv import get_camParam, get_camParamResponse
 
 # Public image for openvslam
-vis_img_pub = rospy.Publisher('/camera/vis', Image, queue_size=10)
 left_img_pub = rospy.Publisher('/camera/left/image_raw', Image, queue_size=10)
 right_img_pub = rospy.Publisher('/camera/right/image_raw', Image, queue_size=10)
 blend_img_pub = rospy.Publisher('/camera/blend/image_raw', Image, queue_size=10)
@@ -412,7 +411,7 @@ def handle_get_camParam(request):
     response.p1= calibration_params.left_cam.disto[2]
     response.p2= calibration_params.left_cam.disto[3]
     response.k3= calibration_params.left_cam.disto[4]
-    response.focal_x_baseline= calibration_params.left_cam.fx * calibration_params.get_camera_baseline()
+    response.focal_x_baseline= response.fx * calibration_params.get_camera_baseline()
 
     return response
 
@@ -481,58 +480,7 @@ def main(argv):
     r_mat = sl.Mat()
     point_cloud_mat = sl.Mat()
     calibration_params = cam.get_camera_information().calibration_parameters
-    print("fx", calibration_params.left_cam.fx)
-    print("fy", calibration_params.left_cam.fy)
-    print("cx", calibration_params.left_cam.cx)
-    print("cy", calibration_params.left_cam.cy)
-    print("k1", calibration_params.left_cam.disto[0])
-    print("k2", calibration_params.left_cam.disto[1])
-    print("p1", calibration_params.left_cam.disto[2])
-    print("p2", calibration_params.left_cam.disto[3])
-    print("k3", calibration_params.left_cam.disto[4])
-    print("focal_x_baseline", calibration_params.left_cam.fx * calibration_params.get_camera_baseline())
-    # Import the global variables. This lets us instance Darknet once,
-    # then just call performDetect() again without instancing again
-    global metaMain, netMain, altNames  # pylint: disable=W0603
-    assert 0 < thresh < 1, "Threshold should be a float between zero and one (non-inclusive)"
-    if not os.path.exists(config_path):
-        raise ValueError("Invalid config path `" +
-                         os.path.abspath(config_path)+"`")
-    if not os.path.exists(weight_path):
-        raise ValueError("Invalid weight path `" +
-                         os.path.abspath(weight_path)+"`")
-    if not os.path.exists(meta_path):
-        raise ValueError("Invalid data file path `" +
-                         os.path.abspath(meta_path)+"`")
-    if netMain is None:
-        netMain = load_net_custom(config_path.encode(
-            "ascii"), weight_path.encode("ascii"), 0, 1)  # batch size = 1
-    if metaMain is None:
-        metaMain = load_meta(meta_path.encode("ascii"))
-    if altNames is None:
-        # In thon 3, the metafile default access craps out on Windows (but not Linux)
-        # Read the names file and create a list to feed to detect
-        try:
-            with open(meta_path) as meta_fh:
-                meta_contents = meta_fh.read()
-                import re
-                match = re.search("names *= *(.*)$", meta_contents,
-                                  re.IGNORECASE | re.MULTILINE)
-                if match:
-                    result = match.group(1)
-                else:
-                    result = None
-                try:
-                    if os.path.exists(result):
-                        with open(result) as names_fh:
-                            names_list = names_fh.read().strip().split("\n")
-                            altNames = [x.strip() for x in names_list]
-                except TypeError:
-                    pass
-        except Exception:
-            pass
-
-    color_array = generate_color(meta_path)
+    print("FX", calibration_params.left_cam.fx)
 
     log.info("Running...")
     depth_map = sl.Mat()
@@ -550,69 +498,16 @@ def main(argv):
 
             cam.retrieve_measure(
                 depth_map, sl.MEASURE.DEPTH)
-            # Do the detection
-            detections = detect(netMain, metaMain, image, thresh)
-
-            log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
-            boundingboxes = []
-            labelPoints = []
-            id = 0
-            # Create check frame
-            h, w, c = image.shape
-            check_img = np.full((h, w, 4), (0, 0, 0, 0), np.uint8)
-            for detection in detections:
-                label = detection[0]
-                confidence = detection[1]
-                pstring = label+": "+str(np.rint(100 * confidence))+"%"
-                log.info(pstring)
-                bounds = detection[2]
-                y_extent = int(bounds[3])
-                x_extent = int(bounds[2])
-                # Coordinates are around the center
-                x_coord = int(bounds[0] - bounds[2]/2)
-                y_coord = int(bounds[1] - bounds[3]/2)
-                #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
-                thickness = 1
-                depth = get_depth(depth_map, bounds)
-                box = centerBdbox()
-                box.probability = confidence
-                box.x_cen = int(bounds[0])
-                box.y_cen = int(bounds[1])
-                box.width = int(bounds[2])
-                box.height = int(bounds[3])
-                box.Class = label
-                box.id = id
-                box.depth = depth
-                # print(label, depth)
-                id += 1
-                boundingboxes.append(box)
-
-                cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
-                              (x_coord + x_extent + thickness, y_coord + (18 + thickness*4)),
-                              color_array[detection[3]], -1)
-                cv2.putText(image, label + " " +  (str("{:.2f}".format(depth)) + " m"),
-                            (x_coord + (thickness * 4), y_coord + (10 + thickness * 4)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
-                              (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
-                              color_array[detection[3]], int(thickness*2))
-
+            
             t = rospy.get_rostime()
             # Publish left and right image for Slam
             from cv_bridge import CvBridge
             bridge = CvBridge()
-            vis_msg_frame = bridge.cv2_to_imgmsg(image)
-            left_msg_frame = bridge.cv2_to_imgmsg(left_image)
+            left_msg_frame = bridge.cv2_to_imgmsg(image)
+            # left_msg_frame = bridge.cv2_to_imgmsg(left_image)
             right_msg_frame = bridge.cv2_to_imgmsg(right_image)
-
-            vis_msg_frame.encoding = "bgra8"
             left_msg_frame.encoding = "bgra8"
             right_msg_frame.encoding = "bgra8"
-
-            vis_msg_frame.header = Header()
-            vis_msg_frame.header.stamp = t;
-            vis_msg_frame.header.frame_id = "vis";
-
             left_msg_frame.header = Header()
             left_msg_frame.header.stamp = t;
             left_msg_frame.header.frame_id = "camera_left";
@@ -620,16 +515,15 @@ def main(argv):
             right_msg_frame.header.stamp = t;
             right_msg_frame.header.frame_id = "camera_right";
 
-            boundingbox_msg = centerBdboxes()
-            boundingbox_msg.header = Header()
-            boundingbox_msg.header.stamp = t;
-            boundingbox_msg.header.frame_id = "object_detection"
-            boundingbox_msg.centerBdboxes = boundingboxes
-            
-            vis_img_pub.publish(vis_msg_frame)
+            # boundingbox_msg = centerBdboxes()
+            # boundingbox_msg.header = Header()
+            # boundingbox_msg.header.stamp = t;
+            # boundingbox_msg.header.frame_id = "object_detection"
+            # boundingbox_msg.centerBdboxes = boundingboxes
+
             left_img_pub.publish(left_msg_frame)
             right_img_pub.publish(right_msg_frame)
-            boundingbox_pub.publish(boundingbox_msg)
+            # boundingbox_pub.publish(boundingbox_msg)
             
             cv2.imshow("ZED", image)
 
